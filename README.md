@@ -1,0 +1,109 @@
+# oci-cost-collector
+
+oci-cost-collector loads the cost reports of an Oracle Cloud Infrastructure (OCI) tenancy into PostgreSQL. Each run loads the reports that are not in the database yet, and then exits. You can then query the cost and usage of each hour with SQL, for example from Grafana.
+
+## How OCI cost reports work
+
+OCI writes a cost report to Object Storage about every two to six hours. The report is a gzip CSV file. Oracle keeps the reports in the namespace `bling`, in a bucket that has the name of the tenancy OCID.
+
+The usage of one hour arrives in pieces, over several reports. A report can contain usage up to about 24 hours before its creation time. To get the full usage of an hour, you add up the lines of all reports for that hour, resource, and product. The `hourly_usage` view does this.
+
+The columns of a report are not fixed. OCI adds one `tags/...` column for each tag key in the tenancy. The order of these columns can change from one report to the next. OCI also adds new columns from time to time. The collector maps the columns by the header line, so it reads every report correctly.
+
+## Requirements
+
+- PostgreSQL 13 or later. The collector creates its tables and view at the start of each run.
+- An OCI principal that can read the cost reports. If you use instance principal, put the instances in a dynamic group and add this policy in the root compartment of your tenancy:
+
+  ```
+  define tenancy usage-report as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq
+  endorse dynamic-group <your-dynamic-group> to read objects in tenancy usage-report
+  ```
+
+  The OCID in the `define` statement is the same for all customers. See [Accessing Cost and Usage Reports](https://docs.oracle.com/en-us/iaas/Content/Billing/Tasks/accessingusagereports.htm).
+
+## Configuration
+
+The collector reads its configuration from environment variables.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OCI_COST_TENANCY_ID` | none, required | The OCID of the tenancy. |
+| `DATABASE_URL` | none, required | A libpq connection string or URI, for example `postgresql://user:password@host:5432/db`. |
+| `OCI_COST_ACCOUNT` | the tenancy OCID | A short name for the tenancy. It goes in the `account` column, so that one database can hold several tenancies. |
+| `OCI_COST_AUTH` | `instance_principal` | `instance_principal`, `resource_principal`, or `config_file`. |
+| `OCI_COST_REGION` | the region of the principal | The region of the Object Storage endpoint. |
+| `OCI_CONFIG_FILE` | `~/.oci/config` | The OCI configuration file, for `config_file`. |
+| `OCI_CONFIG_PROFILE` | `DEFAULT` | The profile in the OCI configuration file. |
+| `OCI_COST_SINCE` | none | Load only the reports created at or after this time, for example `2026-01-01T00:00:00+00:00`. |
+| `LOG_LEVEL` | `INFO` | `DEBUG` logs each report. |
+
+The first run loads all reports in the bucket. Oracle keeps about one year of reports, so this run can take some time. The collector stores each report in its own transaction. If a run stops, the next run continues from the first report that is not stored.
+
+## Run it
+
+With Docker and an OCI configuration file:
+
+```sh
+docker run --rm \
+  -e OCI_COST_TENANCY_ID=ocid1.tenancy.oc1..example \
+  -e OCI_COST_AUTH=config_file \
+  -e DATABASE_URL=postgresql://user:password@db.example.com:5432/cost \
+  -v ~/.oci:/home/collector/.oci:ro \
+  ghcr.io/laobei2012/oci-cost-collector:latest
+```
+
+On Kubernetes, run it as a CronJob, for example once each hour. Set `concurrencyPolicy: Forbid`, so that a long first run does not overlap the next one. If you use instance principal, schedule the pod on nodes of the same tenancy.
+
+## Database
+
+| Object | Content |
+|---|---|
+| `cost_report` | One row for each loaded report: `account`, `name`, `created_at`, `loaded_at`, `line_count`. |
+| `cost_line` | One row for each report line, with all columns of the report. Tags are in the `tags` JSONB column, and unknown columns are in `extra`. |
+| `hourly_usage` | A view that adds up the lines for each account, hour, resource, and product. |
+
+Cost per day for each account:
+
+```sql
+SELECT account, date_trunc('day', hour) AS day, currency_code, sum(my_cost) AS cost
+FROM hourly_usage
+GROUP BY 1, 2, 3
+ORDER BY 2;
+```
+
+Usage per hour of one product:
+
+```sql
+SELECT hour, account, sum(billed_quantity) AS quantity
+FROM hourly_usage
+WHERE product_description = 'Standard - A1'
+GROUP BY 1, 2
+ORDER BY 1;
+```
+
+The newest hours are not complete, because their remaining pieces are in reports that OCI did not write yet. Count an hour as complete about 30 hours after it ends.
+
+## Limits
+
+- The collector does not delete old data. One year of a small tenancy is about 190,000 lines and 160 MB.
+
+## Corrections
+
+When OCI changes a line that it already reported, it adds correction lines with `lineItem/isCorrection` set to `true`. A correction comes as a pair. The first line has the negative quantity and cost of the original line. The second line has the new values. `lineItem/backreferenceNo` of both lines points to the original line. The pair reverses the original line and then adds the new values. So the sum of all lines is correct, and `hourly_usage` needs no special rule for corrections.
+
+## Development
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+docker run -d --rm --name pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine
+TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres .venv/bin/pytest
+```
+
+Without `TEST_DATABASE_URL`, pytest skips the database tests.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
