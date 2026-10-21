@@ -50,3 +50,19 @@ def test_tags_are_stored(conn):
     tags, extra = conn.execute("SELECT tags, extra FROM cost_line").fetchone()
     assert tags == {"env": "prod", "team": "web"}
     assert extra == {"cost/newColumn": "x"}
+
+
+def test_migrate_grants_read_roles(conn, caplog):
+    conn.execute("DROP ROLE IF EXISTS occ_test_reader")
+    conn.execute("CREATE ROLE occ_test_reader")
+    try:
+        db.migrate(conn, read_roles=["occ_test_reader", "occ_test_missing"])
+        for table in ("cost_report", "cost_line", "hourly_usage"):
+            (granted,) = conn.execute(
+                "SELECT has_table_privilege('occ_test_reader', %s, 'SELECT')", (table,)
+            ).fetchone()
+            assert granted, table
+        assert "occ_test_missing does not exist" in caplog.text
+    finally:
+        conn.execute("DROP OWNED BY occ_test_reader")
+        conn.execute("DROP ROLE occ_test_reader")
