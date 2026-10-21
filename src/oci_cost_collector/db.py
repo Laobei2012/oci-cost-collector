@@ -1,11 +1,16 @@
 """Store cost report lines in PostgreSQL."""
 
+import logging
+from collections.abc import Iterable
 from datetime import datetime
 
 import psycopg
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from .report import COLUMNS
+
+log = logging.getLogger("oci_cost_collector")
 
 # Any constant works. It keeps two collectors from creating the schema at the same time.
 SCHEMA_LOCK = 0x0C1C057
@@ -83,11 +88,27 @@ GROUP BY account, usage_start, service, compartment_name, region, resource_id,
 LINE_COLUMNS = ["account", "report_name", "line_no", *COLUMNS.values(), "tags", "extra"]
 
 
-def migrate(conn: psycopg.Connection) -> None:
-    """Create the tables and the view if they do not exist."""
+def migrate(conn: psycopg.Connection, read_roles: Iterable[str] = ()) -> None:
+    """Create the tables and the view if they do not exist.
+
+    Grant SELECT on them to each role in read_roles. A role that does not
+    exist gets a warning, so that the reports still load.
+    """
+    read_roles = list(read_roles)
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK,))
         conn.execute(SCHEMA)
+        rows = conn.execute("SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)", (read_roles,))
+        existing = {name for (name,) in rows}
+        for role in read_roles:
+            if role not in existing:
+                log.warning("Role %s does not exist, so it cannot read the tables.", role)
+                continue
+            conn.execute(
+                sql.SQL("GRANT SELECT ON cost_report, cost_line, hourly_usage TO {}").format(
+                    sql.Identifier(role)
+                )
+            )
 
 
 def loaded_reports(conn: psycopg.Connection, account: str) -> set[str]:

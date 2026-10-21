@@ -29,6 +29,7 @@ def main() -> int:
     account = _env("OCI_COST_ACCOUNT", tenancy_id)
     since = _env("OCI_COST_SINCE")
     since = datetime.fromisoformat(since) if since else None
+    read_roles = [r.strip() for r in _env("OCI_COST_READ_ROLES", "").split(",") if r.strip()]
 
     client = source.make_client(
         auth=_env("OCI_COST_AUTH", "instance_principal"),
@@ -38,7 +39,7 @@ def main() -> int:
     )
 
     with psycopg.connect(database_url, autocommit=True) as conn:
-        db.migrate(conn)
+        db.migrate(conn, read_roles=read_roles)
         done = db.loaded_reports(conn, account)
         todo = [
             r

@@ -35,6 +35,7 @@ The collector reads its configuration from environment variables.
 | `OCI_COST_REGION` | the region of the principal | The region of the Object Storage endpoint. |
 | `OCI_CONFIG_FILE` | `~/.oci/config` | The OCI configuration file, for `config_file`. |
 | `OCI_CONFIG_PROFILE` | `DEFAULT` | The profile in the OCI configuration file. |
+| `OCI_COST_READ_ROLES` | none | A comma-separated list of database roles. Each run grants them `SELECT` on the tables and the view. See [Read access](#read-access). |
 | `OCI_COST_SINCE` | none | Load only the reports created at or after this time, for example `2026-01-01T00:00:00+00:00`. |
 | `LOG_LEVEL` | `INFO` | `DEBUG` logs each report. |
 
@@ -83,6 +84,14 @@ ORDER BY 1;
 ```
 
 The newest hours are not complete, because their remaining pieces are in reports that OCI did not write yet. Count an hour as complete about 30 hours after it ends.
+
+## Read access
+
+The collector owns its tables, so other roles cannot read them at first. Set `OCI_COST_READ_ROLES` to the roles that must read them, for example `OCI_COST_READ_ROLES=grafana,cnpg_metrics_exporter`. Each run grants these roles `SELECT` on `cost_report`, `cost_line`, and `hourly_usage`. So if you create the database again, the next run restores the grants.
+
+If a role does not exist, the collector logs a warning and loads the reports.
+
+With CloudNativePG, custom monitoring queries run as the role `cnpg_metrics_exporter`. Add this role to `OCI_COST_READ_ROLES` if such a query reads the cost tables.
 
 ## Limits
 
