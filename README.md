@@ -60,16 +60,23 @@ The first run loads all reports in the bucket. Oracle keeps about one year of re
 
 With Docker and an OCI configuration file:
 
-```sh
-docker run --rm \
-  -e OCI_COST_TENANCY_ID=ocid1.tenancy.oc1..example \
-  -e OCI_COST_AUTH=config_file \
-  -e DATABASE_URL=postgresql://user:password@db.example.com:5432/cost \
-  -v ~/.oci:/home/collector/.oci:ro \
-  ghcr.io/laobei2012/oci-cost-collector:latest
-```
+1. Write a configuration file for the container, for example `./config`, whose `key_file` is `/oci/oci_api_key.pem`. See the example in [With an OCI configuration file](#with-an-oci-configuration-file).
+2. Mount this file and your API key at `/oci` in the container:
 
-The collector reads the key from the path in the `key_file` line of the configuration file. Inside the container, that path must exist. A path such as `/Users/me/.oci/key.pem` does not work. Use `~/.oci/key.pem`, or a path under `/home/collector/.oci/`.
+   ```sh
+   docker run --rm --read-only --user "$(id -u):$(id -g)" \
+     -e OCI_COST_TENANCY_ID=ocid1.tenancy.oc1..example \
+     -e OCI_COST_AUTH=config_file \
+     -e OCI_CONFIG_FILE=/oci/config \
+     -e DATABASE_URL=postgresql://user:password@db.example.com:5432/cost \
+     -v "$PWD/config:/oci/config:ro" \
+     -v "$HOME/.oci/oci_api_key.pem:/oci/oci_api_key.pem:ro" \
+     ghcr.io/laobei2012/oci-cost-collector:0.2.0
+   ```
+
+The `--user` option runs the collector as your own user, so that it can read your key file. The key file must have the mode `0600` or less, and without this option, the user 10001 in the container cannot read it on Linux. Your user cannot open the home folder of the user 10001 in the container, so the files go to `/oci`, and `OCI_CONFIG_FILE` gives the path of the configuration file.
+
+Do not mount your own `~/.oci` folder. `oci setup config` writes the absolute path of the key to `key_file`, for example `/Users/me/.oci/oci_api_key.pem`. That path does not exist in the container, so the collector cannot read the key.
 
 ## Run it on Kubernetes
 
@@ -120,7 +127,7 @@ spec:
 
 ### With an OCI configuration file
 
-Use this method on a cluster outside OCI. First, write a configuration file whose `key_file` is the path in the container:
+Use this method on a cluster outside OCI. First, write a configuration file whose `key_file` is the path in the container. The same file works for the Docker example in [Run it](#run-it).
 
 ```ini
 [DEFAULT]
@@ -128,7 +135,7 @@ user=ocid1.user.oc1..example
 fingerprint=<fingerprint of the API key>
 tenancy=ocid1.tenancy.oc1..example
 region=us-phoenix-1
-key_file=/home/collector/.oci/oci_api_key.pem
+key_file=/oci/oci_api_key.pem
 ```
 
 Then put the file and the private key in a Secret:
@@ -139,7 +146,7 @@ kubectl create secret generic oci-cost-oci-config \
   --from-file=oci_api_key.pem=./oci_api_key.pem
 ```
 
-Mount the Secret at `/home/collector/.oci`, and set `OCI_COST_AUTH`. Use the CronJob above, without the `nodeSelector`, and change the pod part to this:
+Mount the Secret at `/oci`, and set `OCI_COST_AUTH` and `OCI_CONFIG_FILE`. Use the CronJob above, without the `nodeSelector`, and change the pod part to this:
 
 ```yaml
           # The container runs as the user 10001. With fsGroup, Kubernetes
@@ -152,6 +159,8 @@ Mount the Secret at `/home/collector/.oci`, and set `OCI_COST_AUTH`. Use the Cro
               env:
                 - name: OCI_COST_AUTH
                   value: config_file
+                - name: OCI_CONFIG_FILE
+                  value: /oci/config
                 - name: OCI_COST_TENANCY_ID
                   value: ocid1.tenancy.oc1..example
                 - name: DATABASE_URL
@@ -161,7 +170,7 @@ Mount the Secret at `/home/collector/.oci`, and set `OCI_COST_AUTH`. Use the Cro
                       key: uri
               volumeMounts:
                 - name: oci-config
-                  mountPath: /home/collector/.oci
+                  mountPath: /oci
                   readOnly: true
               securityContext:
                 allowPrivilegeEscalation: false
