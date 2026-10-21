@@ -10,6 +10,19 @@ The usage of one hour arrives in pieces, over several reports. A report can cont
 
 The columns of a report are not fixed. OCI adds one `tags/...` column for each tag key in the tenancy. The order of these columns can change from one report to the next. OCI also adds new columns from time to time. The collector maps the columns by the header line, so it reads every report correctly.
 
+## Why PostgreSQL and not Prometheus
+
+A Prometheus exporter for the cost reports gives wrong numbers, because of four facts:
+
+1. Prometheus stores each value at the time of the scrape. A cost report contains usage up to about 24 hours before its creation time. An exporter can only show that usage at the scrape time, so the chart shows the cost at the wrong hour.
+2. The total of an hour changes after the fact. Each new report can add a piece to an hour, and a correction can reverse a line. Prometheus cannot change a value that it stored before.
+3. Each resource and product is one series. With tags, the number of series grows fast.
+4. Many Prometheus servers keep data for a few weeks. Oracle keeps cost reports for about one year.
+
+PostgreSQL stores each report line with its usage hour. A query adds up all pieces of an hour at read time, so the result is correct also after a late piece or a correction.
+
+You can still alert on the cost with Prometheus. Export a summary from SQL, for example the cost of the current month, and alert on that metric. With CloudNativePG, use a custom monitoring query, see [Read access](#read-access). Without CloudNativePG, you can use a SQL exporter, for example [sql_exporter](https://github.com/burningalchemist/sql_exporter).
+
 ## Requirements
 
 - PostgreSQL 13 or later. The collector creates its tables and view at the start of each run.
