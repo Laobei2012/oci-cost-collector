@@ -25,7 +25,7 @@ You can still alert on the cost with Prometheus. Export a summary from SQL, for 
 
 ## Requirements
 
-- PostgreSQL 13 or later. The collector creates its tables and view at the start of each run.
+- PostgreSQL 13 or later. The collector creates its tables and view at the start of each run, so its role must own the database or have `CREATE` on the schema `public`. From PostgreSQL 15, other roles do not have `CREATE` on `public`, and the collector stops with `permission denied for schema public`. To give the database to the role, run `CREATE DATABASE cost OWNER collector;`.
 - An OCI principal that can read the cost reports. If you use instance principal, put the instances in a dynamic group and add this policy in the root compartment of your tenancy:
 
   ```
@@ -82,7 +82,20 @@ Do not mount your own `~/.oci` folder. `oci setup config` writes the absolute pa
 
 Run the collector as a CronJob, for example once each hour. Set `concurrencyPolicy: Forbid`, so that a long first run does not overlap the next one. The first run loads about one year of reports, so give it an `activeDeadlineSeconds` of about one hour.
 
-Both examples read `DATABASE_URL` from a Secret. With CloudNativePG, use the `uri` key of the Secret `<cluster>-app`.
+Both examples read `DATABASE_URL` from the key `uri` of the Secret `oci-cost-app`. With CloudNativePG, use the Secret `<cluster>-app` that it creates for the owner of the database. It has a `uri` key.
+
+Without CloudNativePG, make the Secret yourself:
+
+```sh
+kubectl create secret generic oci-cost-app \
+  --from-literal=uri='postgresql://collector:<password>@db.example.com:5432/cost?sslmode=require'
+```
+
+If the password has characters such as `@`, `/`, `:`, or `#`, encode them in the URI, for example `@` as `%40`. Without the encoding, the collector reads part of the password as the host name. This command prints the encoded form:
+
+```sh
+python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' '<password>'
+```
 
 ### With instance principal
 
