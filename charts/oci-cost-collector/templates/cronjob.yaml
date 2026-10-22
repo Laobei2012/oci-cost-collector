@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "oci-cost-collector.fullname" . }}
+  labels:
+    {{- include "oci-cost-collector.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  {{- with .Values.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  suspend: {{ .Values.suspend }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "oci-cost-collector.labels" . | nindent 12 }}
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $podSecurityContext := deepCopy .Values.podSecurityContext }}
+          {{- if .Values.oci.configSecret }}
+          {{- $_ := set $podSecurityContext "fsGroup" 10001 }}
+          {{- end }}
+          {{- with $podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: collector
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: OCI_COST_TENANCY_ID
+                  value: {{ required "tenancyId is required" .Values.tenancyId | quote }}
+                {{- with .Values.account }}
+                - name: OCI_COST_ACCOUNT
+                  value: {{ . | quote }}
+                {{- end }}
+                - name: OCI_COST_AUTH
+                  value: {{ .Values.oci.auth | quote }}
+                {{- with .Values.oci.region }}
+                - name: OCI_COST_REGION
+                  value: {{ . | quote }}
+                {{- end }}
+                {{- if .Values.oci.configSecret }}
+                - name: OCI_CONFIG_FILE
+                  value: /oci/config
+                {{- end }}
+                {{- with .Values.oci.profile }}
+                - name: OCI_CONFIG_PROFILE
+                  value: {{ . | quote }}
+                {{- end }}
+                {{- with .Values.readRoles }}
+                - name: OCI_COST_READ_ROLES
+                  value: {{ join "," . | quote }}
+                {{- end }}
+                {{- with .Values.since }}
+                - name: OCI_COST_SINCE
+                  value: {{ . | quote }}
+                {{- end }}
+                - name: LOG_LEVEL
+                  value: {{ .Values.logLevel | quote }}
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.database.existingSecret }}
+                      key: {{ .Values.database.uriKey }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- with .Values.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with .Values.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- if .Values.oci.configSecret }}
+              volumeMounts:
+                - name: oci-config
+                  mountPath: /oci
+                  readOnly: true
+              {{- end }}
+          {{- if .Values.oci.configSecret }}
+          volumes:
+            - name: oci-config
+              secret:
+                secretName: {{ .Values.oci.configSecret }}
+                defaultMode: 0400
+          {{- end }}

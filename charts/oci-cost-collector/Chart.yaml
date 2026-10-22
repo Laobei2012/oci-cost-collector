@@ -1,0 +1,11 @@
+apiVersion: v2
+name: oci-cost-collector
+description: Load the OCI cost reports of one tenancy into PostgreSQL each hour.
+type: application
+# CI sets both versions from the Git tag when it publishes the chart.
+version: 0.3.0
+appVersion: "0.3.0"
+home: https://github.com/Laobei2012/oci-cost-collector
+sources:
+  - https://github.com/Laobei2012/oci-cost-collector
+license: Apache-2.0

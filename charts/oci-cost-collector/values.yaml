@@ -1,0 +1,72 @@
+# The OCID of the tenancy whose cost reports the collector loads. Required.
+tenancyId: ""
+# A short name for the tenancy in the account column. Empty means the tenancy OCID.
+account: ""
+
+oci:
+  # instance_principal, resource_principal, or config_file.
+  auth: instance_principal
+  # The region of the Object Storage endpoint. Empty means the region of the principal.
+  region: ""
+  # For config_file: a Secret with the keys config and the API key file. The
+  # chart mounts it at /oci, so key_file in the config must start with /oci/.
+  configSecret: ""
+  # The profile in the configuration file. Empty means DEFAULT.
+  profile: ""
+
+database:
+  # A Secret that holds the connection URI. With CloudNativePG, use <cluster>-app.
+  existingSecret: oci-cost-app
+  uriKey: uri
+
+# Database roles that get SELECT on the tables at each run.
+readRoles: []
+# Load only the reports created at or after this time, for example 2026-01-01T00:00:00+00:00.
+since: ""
+logLevel: INFO
+
+image:
+  repository: ghcr.io/laobei2012/oci-cost-collector
+  # Empty means the appVersion of the chart.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+schedule: "17 * * * *"
+timeZone: ""
+suspend: false
+concurrencyPolicy: Forbid
+startingDeadlineSeconds: 600
+# The first run loads about one year of reports.
+activeDeadlineSeconds: 3600
+backoffLimit: 2
+successfulJobsHistoryLimit: 1
+failedJobsHistoryLimit: 3
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# With oci.configSecret, the chart also sets fsGroup to the user of the image,
+# so that the collector can read the Secret files.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# With instance principal, select the nodes of the tenancy here.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podLabels: {}
+podAnnotations: {}
+extraEnv: []

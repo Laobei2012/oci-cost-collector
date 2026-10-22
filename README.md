@@ -25,7 +25,7 @@ You can still alert on the cost with Prometheus. Export a summary from SQL, for 
 
 ## Requirements
 
-- PostgreSQL 13 or later. The collector creates its tables and view at the start of each run, so its role must own the database or have `CREATE` on the schema `public`. From PostgreSQL 15, other roles do not have `CREATE` on `public`, and the collector stops with `permission denied for schema public`. To give the database to the role, run `CREATE DATABASE cost OWNER collector;`.
+- PostgreSQL 13 or later, with a database that the role of the collector owns. See [Prepare the database](#prepare-the-database).
 - An OCI principal that can read the cost reports. If you use instance principal, put the instances in a dynamic group and add this policy in the root compartment of your tenancy:
 
   ```
@@ -58,7 +58,24 @@ The first run loads all reports in the bucket. Oracle keeps about one year of re
 
 ## Run it
 
-With Docker and an OCI configuration file:
+### Prepare the database
+
+The collector creates its tables and view at the start of each run, so its role must own the database. From PostgreSQL 15, a role that does not own the database cannot create tables in the schema `public`, and the collector stops with `permission denied for schema public`.
+
+As an admin user of your PostgreSQL server, create the role and the database:
+
+```sql
+CREATE ROLE collector LOGIN PASSWORD '<password>';
+CREATE DATABASE cost OWNER collector;
+```
+
+The collector needs no other step in the database. Give the connection URI to the collector in `DATABASE_URL`, for example `postgresql://collector:<password>@db.example.com:5432/cost`. On Kubernetes, put it in a Secret, see [The database Secret](#the-database-secret).
+
+With CloudNativePG, the operator does these steps for you. Set `bootstrap.initdb.database` and `bootstrap.initdb.owner` in the `Cluster`. CloudNativePG then creates the role and the database, and writes the URI to the key `uri` of the Secret `<cluster>-app`.
+
+### Run it with Docker
+
+With an OCI configuration file:
 
 1. Write a configuration file for the container, for example `./config`, whose `key_file` is `/oci/oci_api_key.pem`. See the example in [With an OCI configuration file](#with-an-oci-configuration-file).
 2. Mount this file and your API key at `/oci` in the container:
@@ -82,7 +99,9 @@ Do not mount your own `~/.oci` folder. `oci setup config` writes the absolute pa
 
 Run the collector as a CronJob, for example once each hour. Set `concurrencyPolicy: Forbid`, so that a long first run does not overlap the next one. The first run loads about one year of reports, so give it an `activeDeadlineSeconds` of about one hour.
 
-Both examples read `DATABASE_URL` from the key `uri` of the Secret `oci-cost-app`. With CloudNativePG, use the Secret `<cluster>-app` that it creates for the owner of the database. It has a `uri` key.
+### The database Secret
+
+The examples below and the Helm chart read `DATABASE_URL` from the key `uri` of the Secret `oci-cost-app`. With CloudNativePG, use the Secret `<cluster>-app` that it creates for the owner of the database. It has a `uri` key.
 
 Without CloudNativePG, make the Secret yourself:
 
@@ -96,6 +115,35 @@ If the password has characters such as `@`, `/`, `:`, or `#`, encode them in the
 ```sh
 python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' '<password>'
 ```
+
+### With Helm
+
+The chart creates one CronJob for one tenancy. For a second tenancy, install a second release.
+
+```sh
+helm install oci-cost-collector oci://ghcr.io/laobei2012/charts/oci-cost-collector \
+  --version 0.3.0 \
+  --set tenancyId=ocid1.tenancy.oc1..example \
+  --set nodeSelector.topology\.kubernetes\.io/region=phx
+```
+
+These values are the most important ones. `values.yaml` in [charts/oci-cost-collector](charts/oci-cost-collector/values.yaml) lists all of them.
+
+| Value | Default | Description |
+|---|---|---|
+| `tenancyId` | none, required | The OCID of the tenancy. |
+| `account` | the tenancy OCID | The value of the `account` column. |
+| `oci.auth` | `instance_principal` | `instance_principal`, `resource_principal`, or `config_file`. |
+| `oci.configSecret` | none | For `config_file`: a Secret with the keys `config` and the API key file. The chart mounts it at `/oci` and sets `fsGroup`. |
+| `database.existingSecret` | `oci-cost-app` | The Secret with the connection URI. |
+| `database.uriKey` | `uri` | The key of the URI in that Secret. |
+| `readRoles` | `[]` | The roles for `OCI_COST_READ_ROLES`. |
+| `schedule` | `17 * * * *` | The schedule of the CronJob. |
+| `nodeSelector` | `{}` | With instance principal, select the nodes of the tenancy. |
+
+The chart checks the values against a schema. For example, it refuses a `tenancyId` that does not start with `ocid1.tenancy.`, and `config_file` without `oci.configSecret`.
+
+The sections below show the same CronJob as plain YAML.
 
 ### With instance principal
 
