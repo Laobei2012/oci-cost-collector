@@ -25,13 +25,15 @@ You can still alert on the cost with Prometheus. Export a summary from SQL, for 
 
 ## Requirements
 
-- PostgreSQL 13 or later. The collector creates its tables and view at the start of each run.
+- PostgreSQL 13 or later, with a database that the role of the collector owns. See [Prepare the database](#prepare-the-database).
 - An OCI principal that can read the cost reports. If you use instance principal, put the instances in a dynamic group and add this policy in the root compartment of your tenancy:
 
   ```
   define tenancy usage-report as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq
   endorse dynamic-group <your-dynamic-group> to read objects in tenancy usage-report
   ```
+
+  If you use an OCI configuration file, the user of the file needs the same policy for its group: `endorse group <your-group> to read objects in tenancy usage-report`.
 
   The OCID in the `define` statement is the same for all customers. See [Accessing Cost and Usage Reports](https://docs.oracle.com/en-us/iaas/Content/Billing/Tasks/accessingusagereports.htm).
 
@@ -56,18 +58,195 @@ The first run loads all reports in the bucket. Oracle keeps about one year of re
 
 ## Run it
 
-With Docker and an OCI configuration file:
+### Prepare the database
 
-```sh
-docker run --rm \
-  -e OCI_COST_TENANCY_ID=ocid1.tenancy.oc1..example \
-  -e OCI_COST_AUTH=config_file \
-  -e DATABASE_URL=postgresql://user:password@db.example.com:5432/cost \
-  -v ~/.oci:/home/collector/.oci:ro \
-  ghcr.io/laobei2012/oci-cost-collector:latest
+The collector creates its tables and view at the start of each run, so its role must own the database. From PostgreSQL 15, a role that does not own the database cannot create tables in the schema `public`, and the collector stops with `permission denied for schema public`.
+
+As an admin user of your PostgreSQL server, create the role and the database:
+
+```sql
+CREATE ROLE collector LOGIN PASSWORD '<password>';
+CREATE DATABASE cost OWNER collector;
 ```
 
-On Kubernetes, run it as a CronJob, for example once each hour. Set `concurrencyPolicy: Forbid`, so that a long first run does not overlap the next one. If you use instance principal, schedule the pod on nodes of the same tenancy.
+The collector needs no other step in the database. Give the connection URI to the collector in `DATABASE_URL`, for example `postgresql://collector:<password>@db.example.com:5432/cost`. On Kubernetes, put it in a Secret, see [The database Secret](#the-database-secret).
+
+With CloudNativePG, the operator does these steps for you. Set `bootstrap.initdb.database` and `bootstrap.initdb.owner` in the `Cluster`. CloudNativePG then creates the role and the database, and writes the URI to the key `uri` of the Secret `<cluster>-app`.
+
+### Run it with Docker
+
+With an OCI configuration file:
+
+1. Write a configuration file for the container, for example `./config`, whose `key_file` is `/oci/oci_api_key.pem`. See the example in [With an OCI configuration file](#with-an-oci-configuration-file).
+2. Mount this file and your API key at `/oci` in the container:
+
+   ```sh
+   docker run --rm --read-only --user "$(id -u):$(id -g)" \
+     -e OCI_COST_TENANCY_ID=ocid1.tenancy.oc1..example \
+     -e OCI_COST_AUTH=config_file \
+     -e OCI_CONFIG_FILE=/oci/config \
+     -e DATABASE_URL=postgresql://user:password@db.example.com:5432/cost \
+     -v "$PWD/config:/oci/config:ro" \
+     -v "$HOME/.oci/oci_api_key.pem:/oci/oci_api_key.pem:ro" \
+     ghcr.io/laobei2012/oci-cost-collector:0.2.0
+   ```
+
+The `--user` option runs the collector as your own user, so that it can read your key file. The key file must have the mode `0600` or less, and without this option, the user 10001 in the container cannot read it on Linux. Your user cannot open the home folder of the user 10001 in the container, so the files go to `/oci`, and `OCI_CONFIG_FILE` gives the path of the configuration file.
+
+Do not mount your own `~/.oci` folder. `oci setup config` writes the absolute path of the key to `key_file`, for example `/Users/me/.oci/oci_api_key.pem`. That path does not exist in the container, so the collector cannot read the key.
+
+## Run it on Kubernetes
+
+Run the collector as a CronJob, for example once each hour. Set `concurrencyPolicy: Forbid`, so that a long first run does not overlap the next one. The first run loads about one year of reports, so give it an `activeDeadlineSeconds` of about one hour.
+
+### The database Secret
+
+The examples below and the Helm chart read `DATABASE_URL` from the key `uri` of the Secret `oci-cost-app`. With CloudNativePG, use the Secret `<cluster>-app` that it creates for the owner of the database. It has a `uri` key.
+
+Without CloudNativePG, make the Secret yourself:
+
+```sh
+kubectl create secret generic oci-cost-app \
+  --from-literal=uri='postgresql://collector:<password>@db.example.com:5432/cost?sslmode=require'
+```
+
+If the password has characters such as `@`, `/`, `:`, or `#`, encode them in the URI, for example `@` as `%40`. Without the encoding, the collector reads part of the password as the host name. This command prints the encoded form:
+
+```sh
+python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' '<password>'
+```
+
+### With Helm
+
+The chart creates one CronJob for one tenancy. For a second tenancy, install a second release.
+
+```sh
+helm install oci-cost-collector oci://ghcr.io/laobei2012/charts/oci-cost-collector \
+  --version 0.3.0 \
+  --set tenancyId=ocid1.tenancy.oc1..example \
+  --set nodeSelector.topology\.kubernetes\.io/region=phx
+```
+
+These values are the most important ones. `values.yaml` in [charts/oci-cost-collector](charts/oci-cost-collector/values.yaml) lists all of them.
+
+| Value | Default | Description |
+|---|---|---|
+| `tenancyId` | none, required | The OCID of the tenancy. |
+| `account` | the tenancy OCID | The value of the `account` column. |
+| `oci.auth` | `instance_principal` | `instance_principal`, `resource_principal`, or `config_file`. |
+| `oci.configSecret` | none | For `config_file`: a Secret with the keys `config` and the API key file. The chart mounts it at `/oci` and sets `fsGroup`. |
+| `database.existingSecret` | `oci-cost-app` | The Secret with the connection URI. |
+| `database.uriKey` | `uri` | The key of the URI in that Secret. |
+| `readRoles` | `[]` | The roles for `OCI_COST_READ_ROLES`. |
+| `schedule` | `17 * * * *` | The schedule of the CronJob. |
+| `nodeSelector` | `{}` | With instance principal, select the nodes of the tenancy. |
+
+The chart checks the values against a schema. For example, it refuses a `tenancyId` that does not start with `ocid1.tenancy.`, and `config_file` without `oci.configSecret`.
+
+The sections below show the same CronJob as plain YAML.
+
+### With instance principal
+
+Use this method on OKE or on other OCI compute nodes. No Secret holds an OCI key. The pod uses the identity of its node, so it must run on nodes of the tenancy whose reports it reads. Put these nodes in the dynamic group of the policy in [Requirements](#requirements).
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oci-cost-collector
+spec:
+  schedule: "17 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          # Only the nodes of the tenancy. Use a label that your nodes have.
+          nodeSelector:
+            topology.kubernetes.io/region: phx
+          containers:
+            - name: collector
+              image: ghcr.io/laobei2012/oci-cost-collector:0.2.0
+              env:
+                - name: OCI_COST_TENANCY_ID
+                  value: ocid1.tenancy.oc1..example
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: oci-cost-app
+                      key: uri
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+```
+
+### With an OCI configuration file
+
+Use this method on a cluster outside OCI. First, write a configuration file whose `key_file` is the path in the container. The same file works for the Docker example in [Run it](#run-it).
+
+```ini
+[DEFAULT]
+user=ocid1.user.oc1..example
+fingerprint=<fingerprint of the API key>
+tenancy=ocid1.tenancy.oc1..example
+region=us-phoenix-1
+key_file=/oci/oci_api_key.pem
+```
+
+Then put the file and the private key in a Secret:
+
+```sh
+kubectl create secret generic oci-cost-oci-config \
+  --from-file=config=./config \
+  --from-file=oci_api_key.pem=./oci_api_key.pem
+```
+
+Mount the Secret at `/oci`, and set `OCI_COST_AUTH` and `OCI_CONFIG_FILE`. Use the CronJob above, without the `nodeSelector`, and change the pod part to this:
+
+```yaml
+          # The container runs as the user 10001. With fsGroup, Kubernetes
+          # gives the files of the Secret to this group, so the user can read them.
+          securityContext:
+            fsGroup: 10001
+          containers:
+            - name: collector
+              image: ghcr.io/laobei2012/oci-cost-collector:0.2.0
+              env:
+                - name: OCI_COST_AUTH
+                  value: config_file
+                - name: OCI_CONFIG_FILE
+                  value: /oci/config
+                - name: OCI_COST_TENANCY_ID
+                  value: ocid1.tenancy.oc1..example
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: oci-cost-app
+                      key: uri
+              volumeMounts:
+                - name: oci-config
+                  mountPath: /oci
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+          volumes:
+            - name: oci-config
+              secret:
+                secretName: oci-cost-oci-config
+                defaultMode: 0400
+```
+
+If you leave out `fsGroup`, the collector stops with `Permission denied` on the key file.
 
 ## Database
 

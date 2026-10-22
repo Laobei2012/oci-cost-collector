@@ -69,3 +69,44 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.0
+      - run: helm lint charts/oci-cost-collector --set tenancyId=ocid1.tenancy.oc1..example
+      - name: Render both auth modes and check them against the Kubernetes schemas
+        run: |
+          mkdir rendered
+          helm template ip charts/oci-cost-collector \
+            --set tenancyId=ocid1.tenancy.oc1..example > rendered/instance-principal.yaml
+          helm template cf charts/oci-cost-collector \
+            --set tenancyId=ocid1.tenancy.oc1..example \
+            --set oci.auth=config_file --set oci.configSecret=oci-config > rendered/config-file.yaml
+          docker run --rm -v "$PWD/rendered:/m" ghcr.io/yannh/kubeconform:v0.8.0 -strict -summary /m
+
+  # On a tag, publish the chart with the version of the tag, next to the image.
+  chart-publish:
+    needs: [image, chart]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.0
+      - env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          helm package charts/oci-cost-collector --version "$version" --app-version "$version"
+          echo "$TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+          helm push "oci-cost-collector-$version.tgz" "oci://ghcr.io/${OWNER,,}/charts"

@@ -1,6 +1,6 @@
 [project]
 name = "oci-cost-collector"
-version = "0.2.0"
+version = "0.3.0"
 description = "Load OCI cost reports into PostgreSQL, with each usage hour summed over all reports."
 readme = "README.md"
 license = "Apache-2.0"
