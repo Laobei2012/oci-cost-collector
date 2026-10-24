@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
         with:
-          version: v4.3.0
+          version: v4.3.1
       - run: helm lint charts/oci-cost-collector --set tenancyId=ocid1.tenancy.oc1..example
       - name: Render both auth modes and check them against the Kubernetes schemas
         run: |
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
         with:
-          version: v4.3.0
+          version: v4.3.1
       - env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
